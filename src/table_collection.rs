@@ -24,8 +24,22 @@ use crate::TskReturnValue;
 use crate::TskitTypeAccess;
 use crate::{tsk_id_t, tsk_size_t};
 use crate::{EdgeId, NodeId};
+use libc::{c_char, strlen};
 use ll_bindings::tsk_table_collection_free;
 use mbox::MBox;
+
+pub enum MetadataSchema {
+    Toplevel,
+    Edges,
+    Nodes,
+    Sites,
+    Mutations,
+    Individuals,
+    Populations,
+    Migrations,
+    #[cfg(feature = "provenance")]
+    Provenance,
+}
 
 /// A table collection.
 ///
@@ -1206,6 +1220,35 @@ impl TableCollection {
         };
         handle_tsk_return_value!(rv)
     }
+
+    /// Set a metadata schema
+    ///
+    /// # Examples
+    ///
+    pub fn set_json_metadata_schema_from_str(
+        &mut self,
+        level: MetadataSchema,
+        schema: impl AsRef<str>,
+    ) -> TskReturnValue {
+        println!("{} {}", schema.as_ref(), schema.as_ref().len());
+        let cstr = std::ffi::CString::new(schema.as_ref()).unwrap();
+        println!("{:?}", cstr);
+        let len = unsafe { strlen(cstr.as_bytes_with_nul().as_ptr() as *const c_char) };
+        println!("{:?}", cstr);
+        println!("{}", len);
+        let rv = match level {
+            MetadataSchema::Populations => unsafe {
+                ll_bindings::tsk_population_table_set_metadata_schema(
+                    &mut (*self.inner).populations,
+                    cstr.as_bytes_with_nul().as_ptr() as *const c_char,
+                    len.try_into().unwrap(),
+                )
+            },
+            _ => unimplemented!("haven't done it yet"),
+        };
+        println!("rv = {}", rv);
+        handle_tsk_return_value!(rv)
+    }
 }
 
 impl TableAccess for TableCollection {
@@ -2309,5 +2352,45 @@ mod test_adding_migrations {
                 metadata[i]
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod test_metadata_schema {
+    use super::*;
+
+    #[test]
+    fn population_metadata_schema() {
+        let json_schema3 = r#"{"codec":"json","type":"object","name":"Population metadata","properties:"{"name":{"type":"string"}}}"#;
+        let json_schema3 = r#"{"codec":"json","type":"object","name":"Population metadata","properties":{"name":{"type":"string"}}}"#;
+        let json_schema2 = r#"{"codec":"json","name":"Population metadata","properties":{"name":{"type":"string"}},"type":"object"}"#;
+        let json_schema = r#"{"codec":"json","name":"Population metadata","properties":{"name":{"type":"string"}},"type":"object"}"#;
+
+        // YOU CANNOT HAVE A TRAILING COMMA AT THE END!!!!!!
+        let from_fp11 = r#"
+    {
+        "codec": "json",
+        "type": "object",
+        "name": "Population metadata",
+        "properties": {"name": {"type": "string"}}
+    }"#;
+
+        assert_eq!(json_schema, json_schema2);
+        let mut tables = TableCollection::new(10.).unwrap();
+        assert!(tables
+            .set_json_metadata_schema_from_str(MetadataSchema::Populations, from_fp11)
+            .is_ok());
+        assert!(!unsafe { (*tables.as_ptr()).populations.metadata_schema.is_null() });
+        let len = unsafe { (*tables.as_ptr()).populations.metadata_schema_length };
+        assert!(len > 0, "{}", len);
+        let schema =
+            unsafe { std::ffi::CStr::from_ptr((*tables.as_ptr()).populations.metadata_schema) };
+        assert_eq!(schema.to_str().unwrap(), from_fp11);
+        tables.dump("foo.trees", 0).unwrap();
+
+        //let tables = TableCollection::new_from_file("bananas.tables").unwrap();
+        //let schema =
+        //    unsafe { std::ffi::CStr::from_ptr((*tables.as_ptr()).populations.metadata_schema) };
+        //println!("from tskit = {}", schema.to_str().unwrap());
     }
 }
